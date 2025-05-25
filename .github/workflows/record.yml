@@ -1,0 +1,96 @@
+name: Track New Repos with Tags
+
+on:
+  schedule:
+    - cron: '25 * * * *'
+  workflow_dispatch: 
+  watch:
+    types: [started]
+jobs:
+  create-tags:
+    runs-on: ubuntu-latest
+    
+    permissions:
+      contents: write  
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      with:
+        fetch-depth: 0  
+        ref: main     
+
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.10'
+
+    - name: Install dependencies
+      run: |
+        python -m pip install requests pygithub
+
+    - name: Get new repositories and create tags
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      run: |
+        import os
+        import requests
+        import time
+        from datetime import datetime, timedelta
+
+        def get_all_new_repos():
+            created_date = (datetime.now() - timedelta(days=30)).strftime("%Y-%m-%d")
+            base_url = f"https://api.github.com/search/repositories?q=created:>={created_date}+stars:>10+is:public&sort=updated&order=desc"
+            headers = {'Authorization': f"token {os.environ['GITHUB_TOKEN']}"}
+            
+            all_repos = []
+            page = 1
+            per_page = 100
+            max_repos = 6000
+            max_pages = 50
+
+            while len(all_repos) < max_repos and page <= max_pages:
+                url = f"{base_url}&per_page={per_page}&page={page}"
+                try:
+                    response = requests.get(url, headers=headers, timeout=60)
+                    response.raise_for_status()
+                    
+                    data = response.json()
+                    repos = data.get('items', [])
+                    all_repos.extend([(repo['owner']['login'], repo['name']) for repo in repos])
+
+                    if len(repos) < per_page:
+                        break
+                        
+                    remaining = int(response.headers.get('X-RateLimit-Remaining', 1))
+                    if remaining <= 2:
+                        reset_time = int(response.headers.get('X-RateLimit-Reset', 0))
+                        sleep_time = max(reset_time - time.time(), 0) + 5
+                        time.sleep(sleep_time)
+
+                    page += 1
+
+                except Exception as e:
+                    break
+
+            return all_repos[:max_repos]
+
+        repo_data = get_all_new_repos()
+
+        for username, repo_name in repo_data:  
+            email = f"{username}@users.noreply.github.com"  
+            tag_name = f"new-repo/{username}-{repo_name}".lower()  
+            
+            os.system(f'''
+            export GIT_AUTHOR_NAME="{username}"
+            export GIT_AUTHOR_EMAIL="{email}"
+            export GIT_COMMITTER_NAME="GitHub Actions"
+            export GIT_COMMITTER_EMAIL="{email}"
+            git commit --allow-empty -m "Track new repo: {username}/{repo_name}"
+            ''')
+            
+            os.system(f'git tag {tag_name}')
+
+        os.system(f"git push origin main")
+        os.system("git push origin --tags")
+      shell: python
