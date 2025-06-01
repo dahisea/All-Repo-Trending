@@ -2,7 +2,7 @@ name: Track New Repos with Tags
 
 on:
   schedule:
-    - cron: '25 * * * *'
+    - cron: '0 11 * * *'
   workflow_dispatch: 
   watch:
     types: [started]
